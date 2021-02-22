@@ -35,24 +35,8 @@
 <script src="../dist/plugins/virtual-tour.js"></script>
 
 <script>
-  const PSV = new PhotoSphereViewer.Viewer({
-    container  : 'photosphere',
-    loadingImg : 'assets/photosphere-logo.gif',
-    caption    : 'Cape Florida Light, Key Biscayne <b>&copy; Pixexid</b>',
-    defaultLong: '100deg',
-    plugins    : [
-      PhotoSphereViewer.MarkersPlugin,
-      [PhotoSphereViewer.VirtualTourPlugin, {
-        positionMode: PhotoSphereViewer.VirtualTourPlugin.MODE_GPS,
-        renderMode  : PhotoSphereViewer.VirtualTourPlugin.MODE_3D,
-      }],
-    ],
-  });
-
-  const virtualTour = PSV.getPlugin(PhotoSphereViewer.VirtualTourPlugin);
-
-  const base = 'https://photo-sphere-viewer-data.netlify.app/';
-  virtualTour.setNodes([
+  const base = 'https://photo-sphere-viewer-data.netlify.app/assets/tour/';
+  const nodes = [
     {
       id      : '1',
       panorama: base + 'key-biscayne-1.jpg',
@@ -131,7 +115,44 @@
       position: [-80.156465, 25.666496, 2],
       panoData: { poseHeading: 328 },
     },
-  ]);
+  ];
+
+  const nodesById = {};
+  nodes.forEach(node => nodesById[node.id] = node);
+
+  const viewer = new PhotoSphereViewer.Viewer({
+    container  : 'photosphere',
+    loadingImg : 'assets/photosphere-logo.gif',
+    caption    : 'Cape Florida Light, Key Biscayne <b>&copy; Pixexid</b>',
+    defaultLong: '100deg',
+    plugins    : [
+      PhotoSphereViewer.MarkersPlugin,
+      [PhotoSphereViewer.VirtualTourPlugin, {
+        positionMode: PhotoSphereViewer.VirtualTourPlugin.MODE_GPS,
+        renderMode  : PhotoSphereViewer.VirtualTourPlugin.MODE_3D,
+
+        // synchronous mode
+        // nodes: nodes,
+
+        // asynchronous mode
+        nodesSource: (nodeId) => {
+          if (!nodeId) {
+            console.log('GET root node');
+            return [nodes[0]];
+          }
+
+          return new Promise(resolve => {
+            console.log('GET nodes for ' + nodeId);
+            setTimeout(() => {
+              resolve(nodesById[nodeId].links.map(link => nodesById[link.nodeId]));
+            }, Math.random() * 200);
+          });
+        },
+      }],
+    ],
+  });
+
+  const virtualTour = viewer.getPlugin(PhotoSphereViewer.VirtualTourPlugin);
 </script>
 </body>
 </html>

@@ -4,6 +4,14 @@ import arrowGeometryJson from './arrow.json';
 import targetIcon from './target.svg';
 
 /**
+ * @callback NodesSource
+ * @summary Function to load the nodes
+ * @memberOf PSV.plugins.VirtualTourPlugin
+ * @param {string} [nodeId] - will be null for the initial node
+ * @returns {PSV.plugins.VirtualTourPlugin.Node[]|Promise<PSV.plugins.VirtualTourPlugin.Node[]>}
+ */
+
+/**
  * @typedef {Object} PSV.plugins.VirtualTourPlugin.Node
  * @summary Definition of a single node in the tour
  * @property {string} id - unique identifier of the node
@@ -34,6 +42,7 @@ import targetIcon from './target.svg';
 /**
  * @typedef {Object} PSV.plugins.VirtualTourPlugin.Options
  * @property {PSV.plugins.VirtualTourPlugin.Node[]} [nodes] - initial nodes
+ * @property {PSV.plugins.VirtualTourPlugin.NodesSource} [nodesSource] - nodes loader
  * @property {'manual'|'gps'} [positionMode='manual'] - configure positionning mode
  * @property {'markers'|'3d'} [renderMode='3d'] - configure rendering mode of links
  * @property {string} [startNodeId] - id of the initial node, if not defined the first node will be used
@@ -159,6 +168,7 @@ export default class VirtualTourPlugin extends AbstractPlugin {
       currentNode   : null,
       currentArrow  : null,
       currentTooltip: null,
+      loadedNodes   : {},
     };
 
     /**
@@ -235,6 +245,15 @@ export default class VirtualTourPlugin extends AbstractPlugin {
 
     if (options?.nodes) {
       this.setNodes(options.nodes, this.config.startNodeId);
+    }
+    else if (this.config.nodesSource) {
+      this.__loadNodes()
+        .then((nodes) => {
+          if (nodes.length > 1) {
+            utils.logWarn('`nodesSource` returned more than one node for initial load.');
+          }
+          this.setNodes(nodes, this.config.startNodeId)
+        });
     }
   }
 
@@ -357,13 +376,28 @@ export default class VirtualTourPlugin extends AbstractPlugin {
 
     this.psv.navbar.setCaption(`<em>${this.psv.config.lang.loading}</em>`);
 
-    this.psv.setPanorama(node.panorama, {
-      transition: 1000,
-      panoData  : node.panoData,
-    })
-      .then(() => {
+    Promise.all([
+      this.psv.setPanorama(node.panorama, {
+        transition: 1000,
+        panoData  : node.panoData,
+      }),
+      this.__loadNodes(nodeId)
+    ])
+      .then(([, nodes]) => {
         if (node.markers) {
           this.markers.setMarkers(node.markers);
+        }
+
+        if (nodes) {
+          this.__checkNodes(nodes);
+
+          // merge nodes
+          nodes
+            .filter(n => !this.nodes[n.id])
+            .forEach(n => this.nodes[n.id] = n);
+
+          // store links
+          node.links = nodes.map(n => ({ nodeId: n.id }));
         }
 
         if (node.links) {
@@ -383,6 +417,32 @@ export default class VirtualTourPlugin extends AbstractPlugin {
   }
 
   /**
+   * @summary Load the nodes linked to a node
+   * @param {string} nodeId
+   * @return {Promise<PSV.plugins.VirtualTourPlugin.Node[]>}
+   * @private
+   */
+  __loadNodes(nodeId = null) {
+    if (!this.config.nodesSource || (nodeId && this.prop.loadedNodes[nodeId])) {
+      return Promise.resolve(null);
+    }
+    else {
+      return Promise.resolve(this.config.nodesSource(nodeId))
+        .then((nodes) => {
+          if (!Array.isArray(nodes)) {
+            throw new PSVError('`nodesSource` returned an invalid value.');
+          }
+
+          if (nodeId) {
+            this.prop.loadedNodes[nodeId] = true;
+          }
+
+          return nodes;
+        });
+    }
+  }
+
+  /**
    * @summary Adds the links for the node
    * @param {PSV.plugins.VirtualTourPlugin.Node} node
    * @private
@@ -397,10 +457,10 @@ export default class VirtualTourPlugin extends AbstractPlugin {
 
         const arrow = ARROW_GEOM.clone();
         const mat = new THREE.MeshLambertMaterial({
-          color: color,
-          emissive: color,
+          color      : color,
+          emissive   : color,
           transparent: true,
-          opacity: opacity,
+          opacity    : opacity,
         });
         const mesh = new THREE.Mesh(arrow, mat);
 
@@ -497,36 +557,40 @@ export default class VirtualTourPlugin extends AbstractPlugin {
       if (!this.markers && node.markers) {
         throw new PSVError(`Node ${node.id} has markers but the markers plugin is not loaded`);
       }
-      if (!node.links && this.config.warnOrphans) {
+      if (!node.links && this.config.warnOrphans && !this.config.nodesSource) {
         utils.logWarn(`Node ${node.id} has no links`);
       }
 
       nodes[node.id] = node;
     });
 
-    rawNodes.forEach((node) => {
-      if (node.links) {
-        node.links.forEach((link, i) => {
-          if (!link.nodeId) {
-            throw new PSVError(`Link #${i} of node ${node.id} has no target id`);
-          }
-          if (!nodes[link.nodeId]) {
-            throw new PSVError(`Target node ${link.nodeId} of node ${node.id} does not exists`);
-          }
-          if (!this.isGps() && !utils.isExtendedPosition(link)) {
-            throw new PSVError(`No position provided for link ${link.nodeId} of node ${node.id}`);
-          }
+    if (!this.config.nodesSource) {
+      rawNodes.forEach((node) => {
+        if (node.links) {
+          node.links.forEach((link, i) => {
+            if (!link.nodeId) {
+              throw new PSVError(`Link #${i} of node ${node.id} has no target id`);
+            }
+            if (!nodes[link.nodeId]) {
+              throw new PSVError(`Target node ${link.nodeId} of node ${node.id} does not exists`);
+            }
+            if (!this.isGps() && !utils.isExtendedPosition(link)) {
+              throw new PSVError(`No position provided for link ${link.nodeId} of node ${node.id}`);
+            }
 
-          linkedNodes[link.nodeId] = true;
+            linkedNodes[link.nodeId] = true;
+          });
+        }
+      });
+
+      if (this.config.warnOrphans) {
+        rawNodes.forEach((node) => {
+          if (!linkedNodes[node.id]) {
+            utils.logWarn(`Node ${node.id} is never linked to`);
+          }
         });
       }
-    });
-
-    rawNodes.forEach((node) => {
-      if (!linkedNodes[node.id] && this.config.warnOrphans) {
-        utils.logWarn(`Node ${node.id} is never linked to`);
-      }
-    });
+    }
 
     return nodes;
   }
