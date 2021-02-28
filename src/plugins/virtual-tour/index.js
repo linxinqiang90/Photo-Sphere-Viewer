@@ -1,14 +1,25 @@
 import { AbstractPlugin, CONSTANTS, DEFAULTS, PSVError, utils } from 'photo-sphere-viewer';
 import * as THREE from 'three';
 import arrowGeometryJson from './arrow.json';
+import { ClientSideDatasource } from './ClientSideDatasource';
+import { ServerSideDatasource } from './ServerSideDatasource';
 import targetIcon from './target.svg';
+import { setMeshColor } from './utils';
 
 /**
- * @callback NodesSource
- * @summary Function to load the nodes
+ * @callback GetNode
+ * @summary Function to load a node
  * @memberOf PSV.plugins.VirtualTourPlugin
- * @param {string} [nodeId] - will be null for the initial node
- * @returns {PSV.plugins.VirtualTourPlugin.Node[]|Promise<PSV.plugins.VirtualTourPlugin.Node[]>}
+ * @param {string} nodeId
+ * @returns {PSV.plugins.VirtualTourPlugin.Node|Promise<PSV.plugins.VirtualTourPlugin.Node>}
+ */
+
+/**
+ * @callback GetLinks
+ * @summary Function to load the links of a node
+ * @memberOf PSV.plugins.VirtualTourPlugin
+ * @param {string} nodeId
+ * @returns {PSV.plugins.VirtualTourPlugin.NodeLink[]|Promise<PSV.plugins.VirtualTourPlugin.NodeLink[]>}
  */
 
 /**
@@ -28,6 +39,8 @@ import targetIcon from './target.svg';
  * @typedef {PSV.ExtendedPosition} PSV.plugins.VirtualTourPlugin.NodeLink
  * @summary Definition of a link between two nodes
  * @property {string} nodeId - identifier of the target node
+ * @property {string} [name] - override the name of the node (tooltip)
+ * @property {number[]} [position] - override the GPS position of the node
  * @property {PSV.plugins.MarkersPlugin.Properties} [markerStyle] - override global marker style
  * @property {PSV.plugins.VirtualTourPlugin.ArrowStyle} [arrowStyle] - override global arrow style
  */
@@ -41,10 +54,12 @@ import targetIcon from './target.svg';
 
 /**
  * @typedef {Object} PSV.plugins.VirtualTourPlugin.Options
- * @property {PSV.plugins.VirtualTourPlugin.Node[]} [nodes] - initial nodes
- * @property {PSV.plugins.VirtualTourPlugin.NodesSource} [nodesSource] - nodes loader
- * @property {'manual'|'gps'} [positionMode='manual'] - configure positionning mode
+ * @property {'client'|'server'} [dataMode='client'] - configure data mode
+ * @property {'manual'|'gps'} [positionMode='manual'] - configure positioning mode
  * @property {'markers'|'3d'} [renderMode='3d'] - configure rendering mode of links
+ * @property {PSV.plugins.VirtualTourPlugin.Node[]} [nodes] - initial nodes
+ * @property {PSV.plugins.VirtualTourPlugin.GetNode} [getNode]
+ * @property {PSV.plugins.VirtualTourPlugin.GetLinks} [getLinks]
  * @property {string} [startNodeId] - id of the initial node, if not defined the first node will be used
  * @property {PSV.plugins.MarkersPlugin.Properties} [markerStyle] - global marker style
  * @property {PSV.plugins.VirtualTourPlugin.ArrowStyle} [arrowStyle] - global arrow style
@@ -52,7 +67,6 @@ import targetIcon from './target.svg';
  * @property {number[]} [arrowPosition=-3] - (3D mode) arrows vertical position relative to the center of the viewer
  * @property {string} [arrowHoverColor=#aa5500] - (3D mode) color applied to link arrows on mousehover
  * @property {number[]} [arrowScaleFactor=[2,0.5]] - (3D mode) scale factor of the link arrows depending on zoom level
- * @property {boolean} [warnOrphans=true] - logs a warning if some nodes have no link or are never linked
  */
 
 
@@ -96,6 +110,20 @@ export default class VirtualTourPlugin extends AbstractPlugin {
    * @constant
    */
   static LINK_DATA = 'tourLink';
+
+  /**
+   * @summary In client mode all the nodes are provided in the config or with the `setNodes` method
+   * @type {string}
+   * @constant
+   */
+  static MODE_CLIENT = 'client';
+
+  /**
+   * @summary In server mode the nodes are fetched asynchronously
+   * @type {string}
+   * @constant
+   */
+  static MODE_SERVER = 'server';
 
   /**
    * @summary In manual mode each link is positionned manually on the panorama
@@ -168,7 +196,6 @@ export default class VirtualTourPlugin extends AbstractPlugin {
       currentNode   : null,
       currentArrow  : null,
       currentTooltip: null,
-      loadedNodes   : {},
     };
 
     /**
@@ -176,6 +203,7 @@ export default class VirtualTourPlugin extends AbstractPlugin {
      * @private
      */
     this.config = {
+      dataMode        : VirtualTourPlugin.MODE_CLIENT,
       positionMode    : VirtualTourPlugin.MODE_MANUAL,
       renderMode      : VirtualTourPlugin.MODE_3D,
       markerLatOffset : -0.1,
@@ -195,12 +223,6 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     };
 
     /**
-     * @member {Object<string, PSV.plugins.VirtualTourPlugin.Node[]>}
-     * @private
-     */
-    this.nodes = null;
-
-    /**
      * @type {PSV.plugins.MarkersPlugin}
      * @private
      */
@@ -209,6 +231,11 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     if (!this.is3D() && !this.markers) {
       throw new PSVError('Tour plugin requires the Markers plugin in markers mode');
     }
+
+    /**
+     * @type {PSV.plugins.VirtualTourPlugin.AbstractDatasource}
+     */
+    this.datasource = this.isServerSide() ? new ServerSideDatasource(this) : new ClientSideDatasource(this);
 
     /**
      * @type {external:THREE.Group}
@@ -243,17 +270,13 @@ export default class VirtualTourPlugin extends AbstractPlugin {
       this.markers.on('select-marker', this);
     }
 
-    if (options?.nodes) {
-      this.setNodes(options.nodes, this.config.startNodeId);
+    if (this.isServerSide()) {
+      if (this.config.startNodeId) {
+        this.setCurrentNode(this.config.startNodeId);
+      }
     }
-    else if (this.config.nodesSource) {
-      this.__loadNodes()
-        .then((nodes) => {
-          if (nodes.length > 1) {
-            utils.logWarn('`nodesSource` returned more than one node for initial load.');
-          }
-          this.setNodes(nodes, this.config.startNodeId)
-        });
+    else if (options?.nodes) {
+      this.setNodes(options.nodes, this.config.startNodeId);
     }
   }
 
@@ -270,7 +293,9 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     this.psv.off(CONSTANTS.EVENTS.CLICK, this);
     this.psv.container.removeEventListener('mousemove', this);
 
-    delete this.nodes;
+    this.datasource.destroy();
+
+    delete this.datasource;
     delete this.markers;
     delete this.prop;
     delete this.arrowsGroup;
@@ -282,7 +307,7 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     let nodeId;
     switch (e.type) {
       case 'select-marker':
-        nodeId = e.args[0].data?.[VirtualTourPlugin.LINK_DATA];
+        nodeId = e.args[0].data?.[VirtualTourPlugin.LINK_DATA]?.nodeId;
         if (nodeId) {
           this.setCurrentNode(nodeId);
         }
@@ -296,8 +321,9 @@ export default class VirtualTourPlugin extends AbstractPlugin {
         break;
 
       case CONSTANTS.EVENTS.CLICK:
-        if (this.prop.currentArrow) {
-          this.setCurrentNode(this.prop.currentArrow.userData[VirtualTourPlugin.LINK_DATA]);
+        nodeId = this.prop.currentArrow?.userData?.[VirtualTourPlugin.LINK_DATA]?.nodeId;
+        if (nodeId) {
+          this.setCurrentNode(nodeId);
         }
         break;
 
@@ -307,6 +333,14 @@ export default class VirtualTourPlugin extends AbstractPlugin {
 
       default:
     }
+  }
+
+  /**
+   * @summary Tests if running in server mode
+   * @return {boolean}
+   */
+  isServerSide() {
+    return this.config.dataMode === VirtualTourPlugin.MODE_SERVER;
   }
 
   /**
@@ -326,21 +360,25 @@ export default class VirtualTourPlugin extends AbstractPlugin {
   }
 
   /**
-   * @summary Sets/changes the nodes
+   * @summary Sets the nodes (client mode only)
    * @param {PSV.plugins.VirtualTourPlugin.Node[]} nodes
    * @param {string} [startNodeId]
    * @throws {PSV.PSVError} when the configuration is incorrect
    */
   setNodes(nodes, startNodeId) {
-    this.nodes = this.__checkNodes(nodes);
+    if (this.isServerSide()) {
+      throw new PSVError('Cannot set nodes in server side');
+    }
+
+    this.datasource.setNodes(nodes);
 
     if (!startNodeId) {
       // eslint-disable-next-line no-param-reassign
-      startNodeId = nodes[0].id;
+      startNodeId = this.datasource.nodes[0].id;
     }
-    else if (!this.nodes[startNodeId]) {
+    else if (!this.datasource.nodes[startNodeId]) {
       // eslint-disable-next-line no-param-reassign
-      startNodeId = nodes[0].id;
+      startNodeId = this.datasource.nodes[0].id;
       utils.logWarn(`startNodeId not found is provided nodes, resetted to ${startNodeId}`);
     }
 
@@ -350,59 +388,49 @@ export default class VirtualTourPlugin extends AbstractPlugin {
   /**
    * @summary Changes the current node
    * @param {string} nodeId
-   * @throws {PSV.PSVError} when the node does not exist
    */
   setCurrentNode(nodeId) {
-    const node = this.nodes[nodeId];
-    this.prop.currentNode = node;
+    return this.datasource.loadNode(nodeId)
+      .then((node) => {
+        this.prop.currentNode = node;
 
-    if (!node) {
-      throw new PSVError(`Node ${nodeId} not found`);
-    }
+        if (this.prop.currentTooltip) {
+          this.prop.currentTooltip.hide();
+          this.prop.currentTooltip = null;
+        }
 
-    if (this.prop.currentTooltip) {
-      this.prop.currentTooltip.hide();
-      this.prop.currentTooltip = null;
-    }
+        if (this.is3D()) {
+          this.arrowsGroup.remove(...this.arrowsGroup.children.filter(o => o.type === 'Mesh'));
+          this.prop.currentArrow = null;
+        }
 
-    if (this.is3D()) {
-      this.arrowsGroup.remove(...this.arrowsGroup.children.filter(o => o.type === 'Mesh'));
-      this.prop.currentArrow = null;
-    }
+        if (this.markers) {
+          this.markers.clearMarkers();
+        }
 
-    if (this.markers) {
-      this.markers.clearMarkers();
-    }
+        this.psv.navbar.setCaption(`<em>${this.psv.config.lang.loading}</em>`);
 
-    this.psv.navbar.setCaption(`<em>${this.psv.config.lang.loading}</em>`);
+        return Promise.all([
+          this.psv.setPanorama(node.panorama, {
+            transition: 1000,
+            panoData  : node.panoData,
+          }),
+          this.datasource.loadLinkedNodes(nodeId),
+        ]);
+      })
+      .then(() => {
+        const node = this.prop.currentNode;
 
-    Promise.all([
-      this.psv.setPanorama(node.panorama, {
-        transition: 1000,
-        panoData  : node.panoData,
-      }),
-      this.__loadNodes(nodeId)
-    ])
-      .then(([, nodes]) => {
         if (node.markers) {
-          this.markers.setMarkers(node.markers);
+          if (this.markers) {
+            this.markers.setMarkers(node.markers);
+          }
+          else {
+            utils.logWarn(`Node ${node.id} markers ignored because plugin is not loaded.`);
+          }
         }
 
-        if (nodes) {
-          this.__checkNodes(nodes);
-
-          // merge nodes
-          nodes
-            .filter(n => !this.nodes[n.id])
-            .forEach(n => this.nodes[n.id] = n);
-
-          // store links
-          node.links = nodes.map(n => ({ nodeId: n.id }));
-        }
-
-        if (node.links) {
-          this.__renderLinks(node);
-        }
+        this.__renderLinks(node);
 
         this.psv.navbar.setCaption(node.caption || this.psv.config.caption);
 
@@ -417,32 +445,6 @@ export default class VirtualTourPlugin extends AbstractPlugin {
   }
 
   /**
-   * @summary Load the nodes linked to a node
-   * @param {string} nodeId
-   * @return {Promise<PSV.plugins.VirtualTourPlugin.Node[]>}
-   * @private
-   */
-  __loadNodes(nodeId = null) {
-    if (!this.config.nodesSource || (nodeId && this.prop.loadedNodes[nodeId])) {
-      return Promise.resolve(null);
-    }
-    else {
-      return Promise.resolve(this.config.nodesSource(nodeId))
-        .then((nodes) => {
-          if (!Array.isArray(nodes)) {
-            throw new PSVError('`nodesSource` returned an invalid value.');
-          }
-
-          if (nodeId) {
-            this.prop.loadedNodes[nodeId] = true;
-          }
-
-          return nodes;
-        });
-    }
-  }
-
-  /**
    * @summary Adds the links for the node
    * @param {PSV.plugins.VirtualTourPlugin.Node} node
    * @private
@@ -452,19 +454,16 @@ export default class VirtualTourPlugin extends AbstractPlugin {
       const position = this.__getLinkPosition(node, link);
 
       if (this.is3D()) {
-        const color = link.arrowStyle?.color || this.config.arrowStyle.color;
-        const opacity = link.arrowStyle?.opacity || this.config.arrowStyle.opacity;
-
         const arrow = ARROW_GEOM.clone();
         const mat = new THREE.MeshLambertMaterial({
-          color      : color,
-          emissive   : color,
           transparent: true,
-          opacity    : opacity,
+          opacity    : link.arrowStyle?.opacity || this.config.arrowStyle.opacity,
         });
         const mesh = new THREE.Mesh(arrow, mat);
 
-        mesh.userData = { [VirtualTourPlugin.LINK_DATA]: link.nodeId };
+        setMeshColor(mesh, link.arrowStyle?.color || this.config.arrowStyle.color);
+
+        mesh.userData = { [VirtualTourPlugin.LINK_DATA]: link };
         mesh.rotateY(-position.longitude);
         mesh.position.copy(
           this.psv.dataHelper
@@ -483,9 +482,9 @@ export default class VirtualTourPlugin extends AbstractPlugin {
           ...this.config.markerStyle,
           ...link.markerStyle,
           id      : `tour-link-${link.nodeId}`,
-          tooltip : this.nodes[link.nodeId].name,
+          tooltip : link.name,
           hideList: true,
-          data    : { [VirtualTourPlugin.LINK_DATA]: link.nodeId },
+          data    : { [VirtualTourPlugin.LINK_DATA]: link },
           ...position,
         }, false);
       }
@@ -505,12 +504,10 @@ export default class VirtualTourPlugin extends AbstractPlugin {
    */
   __getLinkPosition(node, link) {
     if (this.isGps()) {
-      const targetNode = this.nodes[link.nodeId];
-
       const p1 = [THREE.Math.degToRad(node.position[0]), THREE.Math.degToRad(node.position[1])];
-      const p2 = [THREE.Math.degToRad(targetNode.position[0]), THREE.Math.degToRad(targetNode.position[1])];
-      const h1 = node.position[2] !== undefined ? node.position[2] : targetNode.position[2] || 0;
-      const h2 = targetNode.position[2] !== undefined ? targetNode.position[2] : node.position[2] || 0;
+      const p2 = [THREE.Math.degToRad(link.position[0]), THREE.Math.degToRad(link.position[1])];
+      const h1 = node.position[2] !== undefined ? node.position[2] : link.position[2] || 0;
+      const h2 = link.position[2] !== undefined ? link.position[2] : node.position[2] || 0;
 
       let latitude = 0;
       if (h1 !== h2) {
@@ -525,74 +522,6 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     else {
       return this.psv.dataHelper.cleanPosition(link);
     }
-  }
-
-  /**
-   * @summary Check the definition of nodes
-   * @param {PSV.plugins.VirtualTourPlugin.Node[]} rawNodes
-   * @return {Object<string, PSV.plugins.VirtualTourPlugin.Node[]>}
-   * @private
-   */
-  __checkNodes(rawNodes) {
-    const nodes = {};
-    const linkedNodes = {};
-
-    if (!rawNodes || !rawNodes.length) {
-      throw new PSVError('No nodes provided');
-    }
-
-    rawNodes.forEach((node, i) => {
-      if (!node.id) {
-        throw new PSVError(`No id given for node #${i}`);
-      }
-      if (nodes[node.id]) {
-        throw new PSVError(`Duplicate node ${node.id}`);
-      }
-      if (!node.panorama) {
-        throw new PSVError(`No panorama provided for node ${node.id}`);
-      }
-      if (this.isGps() && !(node.position?.length >= 2)) {
-        throw new PSVError(`No position provided for node ${node.id}`);
-      }
-      if (!this.markers && node.markers) {
-        throw new PSVError(`Node ${node.id} has markers but the markers plugin is not loaded`);
-      }
-      if (!node.links && this.config.warnOrphans && !this.config.nodesSource) {
-        utils.logWarn(`Node ${node.id} has no links`);
-      }
-
-      nodes[node.id] = node;
-    });
-
-    if (!this.config.nodesSource) {
-      rawNodes.forEach((node) => {
-        if (node.links) {
-          node.links.forEach((link, i) => {
-            if (!link.nodeId) {
-              throw new PSVError(`Link #${i} of node ${node.id} has no target id`);
-            }
-            if (!nodes[link.nodeId]) {
-              throw new PSVError(`Target node ${link.nodeId} of node ${node.id} does not exists`);
-            }
-            if (!this.isGps() && !utils.isExtendedPosition(link)) {
-              throw new PSVError(`No position provided for link ${link.nodeId} of node ${node.id}`);
-            }
-
-            linkedNodes[link.nodeId] = true;
-          });
-        }
-      });
-
-      if (this.config.warnOrphans) {
-        rawNodes.forEach((node) => {
-          if (!linkedNodes[node.id]) {
-            utils.logWarn(`Node ${node.id} is never linked to`);
-          }
-        });
-      }
-    }
-
-    return nodes;
   }
 
   /**
@@ -619,9 +548,8 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     }
     else {
       if (this.prop.currentArrow) {
-        const link = this.prop.currentNode.links.find(l => l.nodeId === this.prop.currentArrow.userData[VirtualTourPlugin.LINK_DATA]);
-        this.prop.currentArrow.material.color.set(link.arrowStyle?.color || this.config.arrowStyle.color);
-        this.prop.currentArrow.material.emissive.set(link.arrowStyle?.color || this.config.arrowStyle.color);
+        const link = this.prop.currentArrow.userData[VirtualTourPlugin.LINK_DATA];
+        setMeshColor(this.prop.currentArrow, link.arrowStyle?.color || this.config.arrowStyle.color);
 
         if (this.prop.currentTooltip) {
           this.prop.currentTooltip.hide();
@@ -630,16 +558,15 @@ export default class VirtualTourPlugin extends AbstractPlugin {
       }
 
       if (mesh) {
-        mesh.material.color.set(this.config.arrowHoverColor);
-        mesh.material.emissive.set(this.config.arrowHoverColor);
+        setMeshColor(mesh, this.config.arrowHoverColor);
 
-        const node = this.nodes[mesh.userData[VirtualTourPlugin.LINK_DATA]];
+        const link = mesh.userData[VirtualTourPlugin.LINK_DATA];
 
-        if (node.name) {
+        if (link.name) {
           this.prop.currentTooltip = this.psv.tooltip.create({
             left   : viewerPoint.x,
             top    : viewerPoint.y,
-            content: node.name,
+            content: link.name,
           });
         }
       }

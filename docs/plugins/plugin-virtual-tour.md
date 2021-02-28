@@ -50,6 +50,39 @@ const node = {
 ::::
 
 
+The nodes can be provided all at once or asynchronously as the user navigates.
+
+:::: tabs
+
+::: tab Client mode
+In client mode you must provide all `nodes` all at once, you can also change all the nodes with the `setNodes` method.
+
+```js
+const nodes = [
+  { id: 'node-1', panorama: '001.jpg', links: [{ nodeId: 'node-2', x: 1500, y: 780}] },
+  { id: 'node-2', panorama: '002.jpg', links: [{ nodeId: 'node-1', x: 3000, y: 780}] },
+];
+```
+
+:::
+
+::: tab Server mode
+In server mode you provide the two `getNode` and `getLinks` callback which both return a Promise to load the data of node and the links of a node.
+
+```js
+getNode = (nodeId) => {
+  return http.get(`/api/nodes/${nodeId}`);
+};
+getLinks = (nodeId) => {
+  return http.get(`/api/nodes/${nodeId}/links`);
+};
+```
+
+:::
+
+::::
+
+
 ## Example
 
 <iframe style="width: 100%; height: 500px;" src="//jsfiddle.net/mistic100/y0svuLpt/embedded/result,js,html/dark" allowfullscreen="allowfullscreen" frameborder="0"></iframe>
@@ -67,7 +100,7 @@ Unique identifier of the node
 
 Refer to the main [config page](../guide/config.md) for possible values.
 
-#### `links` (required)
+#### `links` (required in client mode)
 - type: `array`
 
 Definition of the links of this node. See bellow.
@@ -110,30 +143,34 @@ Identifier of the target node.
 
 Position of the link in **texture coordinates** (pixels) or **spherical coordinates** (radians).
 
-#### `arrowStyle`
+#### `position` (required in GPS+server mode)
+- type: `number[]`
+
+Overrides the GPS coordinates of the target node.
+
+#### `name`
+- type: `string`
+
+Overrides the tooltip content (defaults to the node's `name` property).
+
+#### `arrowStyle` (3d mode only)
 - type: `object`
 
 Overrides the global style of the arrow used to display the link. See global configuration for details.
-_(Only effective if `renderMode=3d`)._
 
-#### `markerStyle`
+#### `markerStyle` (markers mode only)
 - type: `object`
 
 Overrides the global style of the marker used to display the link. See global configuration for details.
-_(Only effective if `renderMode=markers`)._
 
 
 ## Configuration
 
-#### `nodes`
-- type: `array`
+#### `dataMode`
+- type: `'client' | 'server'`
+- default: `'client'`
 
-Initial list of nodes. You can also call `setNodes` method later.
-
-#### `startNodeId`
-- type: `string`
-
-Id of the initially loaded node. If empty the first node will be displayed. You can also call `setCurrentNode` method later.
+Configure how the nodes configuration is provided.
 
 #### `positionMode`
 - type: `'manual' | 'gps'`
@@ -147,10 +184,30 @@ Configure how the links between nodes are positionned.
 
 How the links are displayed, `markers` requires the [Markers plugin](./plugin-markers.md).
 
-#### `markerStyle`
+#### `nodes` (client mode only)
+- type: `array`
+
+Initial list of nodes. You can also call `setNodes` method later.
+
+#### `getNode(nodeId)` (required in server mode)
+- type: `function(nodeId: string) => Promise<Node>`
+
+Callback to load the configuration of a node.
+
+#### `getLinks(nodeId)` (required in server mode)
+- type: `function(nodeId: string) => Promise<NodeLink[]>`
+
+Callback to load the links of a node.
+
+#### `startNodeId`
+- type: `string`
+
+Id of the initially loaded node. If empty the first node will be displayed. You can also call `setCurrentNode` method later.
+
+#### `markerStyle` (markers mode only)
 - type: `object`
 
-Style of the marker used to display links. _(Only effective if `renderMode=markers`)._
+Style of the marker used to display links.
 
 Default value is:
 ```js
@@ -165,10 +222,10 @@ Default value is:
 }
 ```
 
-#### `arrowStyle`
+#### `arrowStyle` (3d mode only)
 - type: `object`
 
-Style of the arrow used to display links. _(Only effective if `renderMode=3d`)._
+Style of the arrow used to display links.
 
 Default value is:
 ```js
@@ -180,32 +237,30 @@ Default value is:
 
 (The 3D model used cannot be modified).
 
-#### `markerLatOffset`
+#### `markerLatOffset` (markers+gps mode only)
 - type: `number`
 - default: `-0.1`
 
 Vertical offset in radians applied to the markers to compensate for the viewer position above ground.
-_(Only effective if `renderMode=markers` and `positionMode=gps`)._
 
 
-#### `arrowPosition`
+#### `arrowPosition` (3d mode only)
 - type: `number`
 - default: `-3`
 
 Vertical position of the arrows relative to the center of the viewer (unit is arbitrary).
-_(Only effective if `renderMode=3d`)._
 
 
-#### `arrowHoverColor`
+#### `arrowHoverColor` (3d mode only)
 - type: `string`
 - default: `#aa5500`
 
-Color applied to the arrows on mousehover. _(Only effective if `renderMode=3d`)._
+Color applied to the arrows on mousehover.
 
 
 ## Methods
 
-#### `setNodes(nodes, [startNodeId])`
+#### `setNodes(nodes, [startNodeId])` (client mode only)
 
 Changes the nodes and display the first one (or the one designated by `startNodeId`).
 

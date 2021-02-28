@@ -44,16 +44,16 @@
       links   : [
         { nodeId: '2' },
       ],
-      markers: [
+      markers : [
         {
-          id: 'marker-1',
-          image: 'assets/pin-red.png',
-          tooltip: 'Cape Florida Light, Key Biscayne',
+          id       : 'marker-1',
+          image    : 'assets/pin-red.png',
+          tooltip  : 'Cape Florida Light, Key Biscayne',
           width    : 32,
           height   : 32,
           anchor   : 'bottom center',
           longitude: '105deg',
-          latitude: '35deg',
+          latitude : '35deg',
         }
       ],
       position: [-80.156479, 25.666725, 3],
@@ -130,21 +130,30 @@
       [PhotoSphereViewer.VirtualTourPlugin, {
         positionMode: PhotoSphereViewer.VirtualTourPlugin.MODE_GPS,
         renderMode  : PhotoSphereViewer.VirtualTourPlugin.MODE_3D,
+        startNodeId : nodes[0].id,
 
-        // synchronous mode
-        // nodes: nodes,
+        // client mode
+        // dataMode: PhotoSphereViewer.VirtualTourPlugin.MODE_CLIENT,
+        // nodes   : nodes,
 
-        // asynchronous mode
-        nodesSource: (nodeId) => {
-          if (!nodeId) {
-            console.log('GET root node');
-            return [nodes[0]];
-          }
-
+        // server mode
+        dataMode: PhotoSphereViewer.VirtualTourPlugin.MODE_SERVER,
+        getNode : (nodeId) => {
+          console.log('GET node ' + nodeId);
+          return Promise.resolve({
+            ...nodesById[nodeId],
+            links: null,
+          });
+        },
+        getLinks: (nodeId) => {
           return new Promise(resolve => {
-            console.log('GET nodes for ' + nodeId);
+            console.log('GET linked nodes for ' + nodeId);
             setTimeout(() => {
-              resolve(nodesById[nodeId].links.map(link => nodesById[link.nodeId]));
+              resolve(nodesById[nodeId].links.map(link => ({
+                ...link,
+                name    : nodesById[link.nodeId].name,
+                position: nodesById[link.nodeId].position,
+              })));
             }, Math.random() * 200);
           });
         },
