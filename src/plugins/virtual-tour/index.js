@@ -4,7 +4,7 @@ import arrowGeometryJson from './arrow.json';
 import { ClientSideDatasource } from './ClientSideDatasource';
 import { ServerSideDatasource } from './ServerSideDatasource';
 import targetIcon from './target.svg';
-import { setMeshColor } from './utils';
+import { bearing, distance, setMeshColor } from './utils';
 
 /**
  * @callback GetNode
@@ -20,6 +20,15 @@ import { setMeshColor } from './utils';
  * @memberOf PSV.plugins.VirtualTourPlugin
  * @param {string} nodeId
  * @returns {PSV.plugins.VirtualTourPlugin.NodeLink[]|Promise<PSV.plugins.VirtualTourPlugin.NodeLink[]>}
+ */
+
+/**
+ * @callback Preload
+ * @summary Function to determine if a link must be preloaded
+ * @memberOf PSV.plugins.VirtualTourPlugin
+ * @param {PSV.plugins.VirtualTourPlugin.Node} node
+ * @param {PSV.plugins.VirtualTourPlugin.NodeLink} link
+ * @returns {boolean}
  */
 
 /**
@@ -61,6 +70,7 @@ import { setMeshColor } from './utils';
  * @property {PSV.plugins.VirtualTourPlugin.GetNode} [getNode]
  * @property {PSV.plugins.VirtualTourPlugin.GetLinks} [getLinks]
  * @property {string} [startNodeId] - id of the initial node, if not defined the first node will be used
+ * @property {boolean|PSV.plugins.VirtualTourPlugin.Preload} [preload=false] - preload linked panoramas
  * @property {PSV.plugins.MarkersPlugin.Properties} [markerStyle] - global marker style
  * @property {PSV.plugins.VirtualTourPlugin.ArrowStyle} [arrowStyle] - global arrow style
  * @property {number} [markerLatOffset=-0.1] - (GPS & Markers mode) latitude offset applied to link markers, to compensate for viewer height
@@ -199,6 +209,12 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     };
 
     /**
+     * @type {Record<string, boolean | Promise>}
+     * @private
+     */
+    this.preload = {};
+
+    /**
      * @member {PSV.plugins.VirtualTourPlugin.Options}
      * @private
      */
@@ -206,6 +222,7 @@ export default class VirtualTourPlugin extends AbstractPlugin {
       dataMode        : VirtualTourPlugin.MODE_CLIENT,
       positionMode    : VirtualTourPlugin.MODE_MANUAL,
       renderMode      : VirtualTourPlugin.MODE_3D,
+      preload         : false,
       markerLatOffset : -0.1,
       arrowHoverColor : 0xaa5500,
       arrowPosition   : -3,
@@ -295,6 +312,7 @@ export default class VirtualTourPlugin extends AbstractPlugin {
 
     this.datasource.destroy();
 
+    delete this.preload;
     delete this.datasource;
     delete this.markers;
     delete this.prop;
@@ -390,7 +408,15 @@ export default class VirtualTourPlugin extends AbstractPlugin {
    * @param {string} nodeId
    */
   setCurrentNode(nodeId) {
-    return this.datasource.loadNode(nodeId)
+    this.psv.loader.show();
+    this.psv.hideError();
+
+    // if this node is already preloading, wait for it
+    return Promise.resolve(this.preload[nodeId])
+      .then(() => {
+        this.psv.textureLoader.abortLoading();
+        return this.datasource.loadNode(nodeId);
+      })
       .then((node) => {
         this.prop.currentNode = node;
 
@@ -414,7 +440,9 @@ export default class VirtualTourPlugin extends AbstractPlugin {
           this.psv.setPanorama(node.panorama, {
             transition: 1000,
             panoData  : node.panoData,
-          }),
+          })
+            // eslint-disable-next-line prefer-promise-reject-errors
+            .catch(() => Promise.reject(null)), // the error is already displayed by the core
           this.datasource.loadLinkedNodes(nodeId),
         ]);
       })
@@ -432,6 +460,11 @@ export default class VirtualTourPlugin extends AbstractPlugin {
 
         this.__renderLinks(node);
 
+        if (this.config.preload) {
+          this.preload[node.id] = true;
+          this.__preload();
+        }
+
         this.psv.navbar.setCaption(node.caption || this.psv.config.caption);
 
         /**
@@ -441,6 +474,15 @@ export default class VirtualTourPlugin extends AbstractPlugin {
          * @param {string} nodeId
          */
         this.trigger(VirtualTourPlugin.EVENTS.NODE_CHANGED, nodeId);
+      })
+      .catch((err) => {
+        this.psv.loader.hide();
+
+        if (err) {
+          this.psv.showError(this.psv.config.lang.loadError);
+        }
+
+        return Promise.reject(err);
       });
   }
 
@@ -511,11 +553,10 @@ export default class VirtualTourPlugin extends AbstractPlugin {
 
       let latitude = 0;
       if (h1 !== h2) {
-        const d = utils.greatArcDistance(p1, p2) * 6371e3;
-        latitude = Math.atan((h2 - h1) / d);
+        latitude = Math.atan((h2 - h1) / distance(p1, p2));
       }
 
-      const longitude = utils.bearing(p1, p2);
+      const longitude = bearing(p1, p2);
 
       return { longitude, latitude };
     }
@@ -587,6 +628,35 @@ export default class VirtualTourPlugin extends AbstractPlugin {
     const s = this.config.arrowScaleFactor;
     const f = s[0] + (s[1] - s[0]) * CONSTANTS.EASINGS.linear(this.psv.prop.zoomLvl / 100);
     this.arrowsGroup.scale.set(f, f, f);
+  }
+
+  /**
+   * @summary Manage the preload of the linked panoramas
+   * @private
+   */
+  __preload() {
+    this.prop.currentNode.links
+      .filter(link => !this.preload[link.nodeId])
+      .filter((link) => {
+        if (typeof this.config.preload === 'function') {
+          return this.config.preload(this.prop.currentNode, link);
+        }
+        else {
+          return true;
+        }
+      })
+      .forEach((link) => {
+        this.preload[link.nodeId] = this.datasource.loadNode(link.nodeId)
+          .then((node) => {
+            return this.psv.textureLoader.preloadPanorama(node.panorama);
+          })
+          .then(() => {
+            this.preload[link.nodeId] = true;
+          })
+          .catch(() => {
+            delete this.preload[link.nodeId];
+          });
+      });
   }
 
 }

@@ -204,6 +204,13 @@ Callback to load the links of a node.
 
 Id of the initially loaded node. If empty the first node will be displayed. You can also call `setCurrentNode` method later.
 
+#### `preload`
+- type: `boolean | function(node: Node, link: NodeLink) => boolean`
+- default: `false`
+
+Enable the preloading of linked nodes, can be a function that returns true or false for each link.
+
+
 #### `markerStyle` (markers mode only)
 - type: `object`
 
