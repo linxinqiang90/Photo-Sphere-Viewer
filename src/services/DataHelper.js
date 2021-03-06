@@ -70,11 +70,11 @@ export class DataHelper extends AbstractService {
    * @returns {PSV.Position}
    */
   textureCoordsToSphericalCoords(point) {
-    if (this.prop.isCubemap) {
-      throw new PSVError('Unable to use texture coords with cubemap.');
+    const panoData = this.prop.panoData;
+    if (!panoData) {
+      throw new PSVError('Current adapter does not support texture coordinates.');
     }
 
-    const panoData = this.prop.panoData;
     const relativeX = (point.x + panoData.croppedX) / panoData.fullWidth * Math.PI * 2;
     const relativeY = (point.y + panoData.croppedY) / panoData.fullHeight * Math.PI;
 
@@ -90,11 +90,11 @@ export class DataHelper extends AbstractService {
    * @returns {PSV.Point}
    */
   sphericalCoordsToTextureCoords(position) {
-    if (this.prop.isCubemap) {
-      throw new PSVError('Unable to use texture coords with cubemap.');
+    const panoData = this.prop.panoData;
+    if (!panoData) {
+      throw new PSVError('Current adapter does not support texture coordinates.');
     }
 
-    const panoData = this.prop.panoData;
     const relativeLong = position.longitude / Math.PI / 2 * panoData.fullWidth;
     const relativeLat = position.latitude / Math.PI * panoData.fullHeight;
 
@@ -145,7 +145,7 @@ export class DataHelper extends AbstractService {
 
     this.psv.renderer.raycaster.setFromCamera(screen, this.psv.renderer.camera);
 
-    const intersects = this.psv.renderer.raycaster.intersectObjects(this.psv.renderer.scene.children);
+    const intersects = this.psv.renderer.raycaster.intersectObjects(this.psv.renderer.scene.children, true);
 
     if (intersects.length === 1) {
       return intersects[0].point;

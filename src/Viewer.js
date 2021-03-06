@@ -63,7 +63,6 @@ export class Viewer extends EventEmitter {
      * @protected
      * @property {boolean} ready - when all components are loaded
      * @property {boolean} needsUpdate - if the view needs to be renderer
-     * @property {boolean} isCubemap - if the panorama is a cubemap
      * @property {PSV.Position} position - current direction of the camera
      * @property {external:THREE.Vector3} direction - direction of the camera
      * @property {number} zoomLvl - current zoom level
@@ -83,7 +82,6 @@ export class Viewer extends EventEmitter {
       uiRefresh       : false,
       needsUpdate     : false,
       fullscreen      : false,
-      isCubemap       : undefined,
       position        : {
         longitude: 0,
         latitude : 0,
@@ -135,6 +133,14 @@ export class Viewer extends EventEmitter {
     this.container = document.createElement('div');
     this.container.classList.add('psv-container');
     this.parent.appendChild(this.container);
+
+    /**
+     * @summary Render adapter
+     * @type {PSV.adapters.AbstractAdapter}
+     * @readonly
+     * @package
+     */
+    this.adapter = new this.config.adapter[0](this, this.config.adapter[1]); // eslint-disable-line new-cap
 
     /**
      * @summary All child components
@@ -276,6 +282,7 @@ export class Viewer extends EventEmitter {
     this.renderer.destroy();
     this.textureLoader.destroy();
     this.dataHelper.destroy();
+    this.adapter.destroy();
 
     this.children.slice().forEach(child => child.destroy());
     this.children.length = 0;
@@ -413,6 +420,8 @@ export class Viewer extends EventEmitter {
       this.prop.aspect = this.prop.size.width / this.prop.size.height;
       this.prop.hFov = this.dataHelper.vFovToHFov(this.prop.vFov);
 
+      this.renderer.updateCameraMatrix();
+
       this.needsUpdate();
       this.trigger(EVENTS.SIZE_UPDATED, this.getSize());
       this.__resizeRefresh();
@@ -424,7 +433,7 @@ export class Viewer extends EventEmitter {
    * @description Loads a new panorama file, optionally changing the camera position/zoom and activating the transition animation.<br>
    * If the "options" parameter is not defined, the camera will not move and the ongoing animation will continue.<br>
    * If another loading is already in progress it will be aborted.
-   * @param {string|string[]|PSV.Cubemap} path - URL of the new panorama file
+   * @param {*} path - URL of the new panorama file
    * @param {PSV.PanoramaOptions} [options]
    * @returns {Promise}
    */
@@ -435,10 +444,10 @@ export class Viewer extends EventEmitter {
 
     // apply default parameters on first load
     if (!this.prop.ready) {
-      if (!('longitude' in options) && !this.prop.isCubemap) {
+      if (!('longitude' in options)) {
         options.longitude = this.config.defaultLong;
       }
-      if (!('latitude' in options) && !this.prop.isCubemap) {
+      if (!('latitude' in options)) {
         options.latitude = this.config.defaultLat;
       }
       if (!('zoom' in options)) {
@@ -450,6 +459,8 @@ export class Viewer extends EventEmitter {
       if (!('panoData' in options)) {
         options.panoData = this.config.panoData;
       }
+
+      this.prop.direction = this.dataHelper.sphericalCoordsToVector3(options);
     }
 
     if (options.transition === undefined || options.transition === true) {
@@ -492,12 +503,12 @@ export class Viewer extends EventEmitter {
       }
     };
 
-    if (!options.transition || !this.prop.ready) {
+    if (!options.transition || !this.prop.ready || !this.adapter.supportsTransition()) {
       if (options.showLoader || !this.prop.ready) {
         this.loader.show();
       }
 
-      this.prop.loadingPromise = this.textureLoader.loadTexture(this.config.panorama, options.panoData)
+      this.prop.loadingPromise = this.adapter.loadTexture(this.config.panorama, options.panoData)
         .then((textureData) => {
           this.renderer.setTexture(textureData);
           this.renderer.setSphereCorrection(textureData.panoData, options.sphereCorrection);
@@ -516,7 +527,7 @@ export class Viewer extends EventEmitter {
         this.loader.show();
       }
 
-      this.prop.loadingPromise = this.textureLoader.loadTexture(this.config.panorama, options.panoData)
+      this.prop.loadingPromise = this.adapter.loadTexture(this.config.panorama, options.panoData)
         .then((textureData) => {
           this.loader.hide();
 
@@ -803,6 +814,8 @@ export class Viewer extends EventEmitter {
       this.prop.zoomLvl = newZoomLvl;
       this.prop.vFov = this.dataHelper.zoomLevelToFov(this.prop.zoomLvl);
       this.prop.hFov = this.dataHelper.vFovToHFov(this.prop.vFov);
+
+      this.renderer.updateCameraMatrix();
 
       this.needsUpdate();
       this.trigger(EVENTS.ZOOM_UPDATED, this.getZoomLevel());
