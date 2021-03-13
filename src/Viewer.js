@@ -6,10 +6,12 @@ import { Navbar } from './components/Navbar';
 import { Notification } from './components/Notification';
 import { Overlay } from './components/Overlay';
 import { Panel } from './components/Panel';
-import { CONFIG_PARSERS, DEFAULTS, getConfig, READONLY_OPTIONS } from './data/config';
+import { CONFIG_PARSERS, DEFAULTS, DEPRECATED_OPTIONS, getConfig, READONLY_OPTIONS } from './data/config';
 import { CHANGE_EVENTS, EVENTS, IDS, VIEWER_DATA } from './data/constants';
 import { SYSTEM } from './data/system';
+import { Dynamic } from './utils/Dynamic';
 import errorIcon from './icons/error.svg';
+import { MultiDynamic } from './utils/MultiDynamic';
 import { PSVError } from './PSVError';
 import { DataHelper } from './services/DataHelper';
 import { EventsHandler } from './services/EventsHandler';
@@ -24,6 +26,7 @@ import {
   getShortestArc,
   isExtendedPosition,
   isFullscreenEnabled,
+  logWarn,
   requestFullscreen,
   throttle,
   toggleClass
@@ -216,15 +219,30 @@ export class Viewer extends EventEmitter {
      */
     this.overlay = new Overlay(this);
 
+    /**
+     * @member {Record<string, PSV.Dynamic>}
+     * @package
+     */
+    this.dynamics = {
+      zoom    : new Dynamic((value) => {
+        this.zoom(value, false);
+      }, 0, 100),
+      position: new MultiDynamic({
+        longitude: new Dynamic(),
+        latitude : new Dynamic(null, -Math.PI / 2, Math.PI / 2),
+      }, (position) => {
+        this.rotate(position, false);
+      }),
+    };
+
+    this.__updateSpeeds();
+
     this.eventsHandler.init();
 
     this.__resizeRefresh = throttle(() => this.refreshUi('resize'), 500);
 
     // apply container size
     this.resize(this.config.size);
-
-    // actual move speed depends on pixel-ratio
-    this.prop.moveSpeed = THREE.Math.degToRad(this.config.moveSpeed / SYSTEM.pixelRatio);
 
     // init plugins
     this.config.plugins.forEach(([plugin, opts]) => {
@@ -536,6 +554,11 @@ export class Viewer extends EventEmitter {
    */
   setOptions(options) {
     each(options, (value, key) => {
+      if (DEPRECATED_OPTIONS[key]) {
+        logWarn(DEPRECATED_OPTIONS[key]);
+        return;
+      }
+
       if (!Object.prototype.hasOwnProperty.call(DEFAULTS, key)) {
         throw new PSVError(`Unknown option ${key}`);
       }
@@ -570,7 +593,8 @@ export class Viewer extends EventEmitter {
           break;
 
         case 'moveSpeed':
-          this.prop.moveSpeed = THREE.Math.degToRad(value / SYSTEM.pixelRatio);
+        case 'zoomSpeed':
+          this.__updateSpeeds();
           break;
 
         case 'minFov':
@@ -688,7 +712,7 @@ export class Viewer extends EventEmitter {
    * @fires PSV.before-rotate
    * @fires PSV.position-updated
    */
-  rotate(position) {
+  rotate(position, setDynamic = true) {
     const e = this.trigger(EVENTS.BEFORE_ROTATE, position);
     if (e.isDefaultPrevented()) {
       return;
@@ -699,6 +723,10 @@ export class Viewer extends EventEmitter {
     if (this.prop.position.longitude !== cleanPosition.longitude || this.prop.position.latitude !== cleanPosition.latitude) {
       this.prop.position.longitude = cleanPosition.longitude;
       this.prop.position.latitude = cleanPosition.latitude;
+
+      if (setDynamic) {
+        this.dynamics.position.setCurrent(this.prop.position);
+      }
 
       this.needsUpdate();
 
@@ -797,13 +825,17 @@ export class Viewer extends EventEmitter {
    * @param {number} level - new zoom level from 0 to 100
    * @fires PSV.zoom-updated
    */
-  zoom(level) {
+  zoom(level, setDynamic = true) {
     const newZoomLvl = bound(level, 0, 100);
 
     if (this.prop.zoomLvl !== newZoomLvl) {
       this.prop.zoomLvl = newZoomLvl;
       this.prop.vFov = this.dataHelper.zoomLevelToFov(this.prop.zoomLvl);
       this.prop.hFov = this.dataHelper.vFovToHFov(this.prop.vFov);
+
+      if (setDynamic) {
+        this.dynamics.zoom.setCurrent(this.getZoomLevel());
+      }
 
       this.needsUpdate();
       this.trigger(EVENTS.ZOOM_UPDATED, this.getZoomLevel());
@@ -815,14 +847,14 @@ export class Viewer extends EventEmitter {
    * @summary Increases the zoom level by 1
    */
   zoomIn() {
-    this.zoom(this.prop.zoomLvl + this.config.zoomButtonIncrement);
+    this.zoom(this.prop.zoomLvl + this.config.zoomSpeed);
   }
 
   /**
    * @summary Decreases the zoom level by 1
    */
   zoomOut() {
-    this.zoom(this.prop.zoomLvl - this.config.zoomButtonIncrement);
+    this.zoom(this.prop.zoomLvl - this.config.zoomSpeed);
   }
 
   /**
@@ -910,6 +942,19 @@ export class Viewer extends EventEmitter {
     this.stopAnimation();
 
     this.trigger(EVENTS.STOP_ALL);
+  }
+
+  /**
+   * @summary Recomputes configured speeds
+   * @private
+   */
+  __updateSpeeds() {
+    // speed for cursor, depends on pixel ratio
+    this.prop.moveSpeed = THREE.Math.degToRad(this.config.moveSpeed / SYSTEM.pixelRatio);
+
+    // speeds for dynamics, all factors are empirical
+    this.dynamics.zoom.speed = this.config.zoomSpeed * 50;
+    this.dynamics.position.speed = THREE.Math.degToRad(this.config.moveSpeed * 50);
   }
 
 }

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Animation } from '../Animation';
 import { CUBE_VERTICES, EVENTS, SPHERE_RADIUS, SPHERE_VERTICES } from '../data/constants';
 import { SYSTEM } from '../data/system';
-import { isExtendedPosition, isNil, logWarn } from '../utils';
+import { each, isExtendedPosition, isNil, logWarn } from '../utils';
 import { AbstractService } from './AbstractService';
 
 /**
@@ -65,6 +65,12 @@ export class Renderer extends AbstractService {
      * @protected
      */
     this.raycaster = null;
+
+    /**
+     * @member {number}
+     * @private
+     */
+    this.timestamp = null;
 
     /**
      * @member {HTMLElement}
@@ -139,7 +145,11 @@ export class Renderer extends AbstractService {
    * @package
    */
   __renderLoop(timestamp) {
-    this.psv.trigger(EVENTS.BEFORE_RENDER, timestamp);
+    const elapsed = this.timestamp !== null ? timestamp - this.timestamp : 0;
+    this.timestamp = timestamp;
+
+    this.psv.trigger(EVENTS.BEFORE_RENDER, timestamp, elapsed);
+    each(this.psv.dynamics, d => d.update(elapsed));
 
     if (this.prop.needsUpdate) {
       this.render();

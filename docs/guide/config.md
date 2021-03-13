@@ -218,19 +218,13 @@ In a future version the order in which the angles are applied will change. It is
 - type: `double`
 - default `1`
 
-Speed multiplicator for manual moves.
+Speed multiplicator for panorama moves.
 
-#### `zoomButtonIncrement`
+#### `zoomSpeed`
 - type: `double`
-- default `2`
+- default `1`
 
-Zoom increment when using the keyboard or the navbar buttons.
-
-#### `mousewheelSpeed`
-- type: `double`
-- default: `1`
-
-Zoom speed when using the mouse wheel.
+Speed multiplicator for panorama zooms.
 
 #### `useXmpData`
 - type: `boolean`

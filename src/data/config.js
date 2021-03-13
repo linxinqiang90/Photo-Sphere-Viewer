@@ -24,13 +24,12 @@ export const DEFAULTS = {
   sphereCorrection   : null,
   sphereCorrectionReorder: false,
   moveSpeed          : 1,
-  zoomButtonIncrement: 2,
+  zoomSpeed          : 1,
   autorotateDelay    : null,
   autorotateSpeed    : '2rpm',
   autorotateLat      : null,
   moveInertia        : true,
   mousewheel         : true,
-  mousewheelSpeed    : 1,
   mousemove          : true,
   captureCursor      : false,
   mousewheelCtrlKey  : false,
@@ -41,9 +40,8 @@ export const DEFAULTS = {
   withCredentials    : false,
   navbar             : [
     'autorotate',
-    'zoomOut',
-    'zoomRange',
-    'zoomIn',
+    'zoom',
+    'move',
     'download',
     'caption',
     'fullscreen',
@@ -83,6 +81,15 @@ export const READONLY_OPTIONS = {
   panoData : 'Use setPanorama method to change the panorama',
   container: 'Cannot change viewer container',
   plugins  : 'Cannot change plugins',
+};
+
+/**
+ * @summary List of deprecated options and their warning messages
+ * @private
+ */
+export const DEPRECATED_OPTIONS = {
+  zoomButtonIncrement: 'zoomButtonIncrement is deprecated, use zoomSpeed',
+  mousewheelSpeed    : 'mousewheelSpeed is deprecated, use zoomSpeed',
 };
 
 /**
@@ -191,6 +198,11 @@ export function getConfig(options) {
   const config = {};
 
   each(tempConfig, (value, key) => {
+    if (DEPRECATED_OPTIONS[key]) {
+      logWarn(DEPRECATED_OPTIONS[key]);
+      return;
+    }
+
     if (!Object.prototype.hasOwnProperty.call(DEFAULTS, key)) {
       throw new PSVError(`Unknown option ${key}`);
     }
